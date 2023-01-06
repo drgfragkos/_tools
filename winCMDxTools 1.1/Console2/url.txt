@@ -1,0 +1,1 @@
+http://www.hanselman.com/blog/Console2ABetterWindowsCommandPrompt.aspx

@@ -1,0 +1,7 @@
+winCMDxTools 1.1 - (c) gfragkos 2012
+Windows Command line eXtra Tools
+
+
+1.) Just copy/paste all these files within the system32 directory.
+2.) To see the available NEW commands type the letter 'h' in the 
+    command line and hit [Enter]
