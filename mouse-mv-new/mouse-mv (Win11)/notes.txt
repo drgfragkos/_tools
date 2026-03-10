@@ -1,0 +1,4 @@
+> Get-Item -Path "mouse-mv.exe" | Format-List *
+
+> (Get-Item -Path "mouse-mv.exe").VersionInfo | Format-List *
+
