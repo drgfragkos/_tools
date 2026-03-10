@@ -1,0 +1,36 @@
+#include <windows.h>
+
+//A ICON MOVEABLE PURE LOADONCALL DISCARDABLE "mouse-mv.ico"       //removed deprecated qualifiers
+1 ICON "mouse-mv.ico"                                              //numeric ID for better windres compatibility
+
+//
+// TO CHANGE VERSION INFORMATION, EDIT PROJECT OPTIONS... | x86_64-w64-mingw32-g++ -o mouse-mv.exe resource.res main.cpp -mwindows
+//
+
+1 VERSIONINFO
+FILEVERSION 3,14,15,9
+PRODUCTVERSION 3,14,0,0
+FILETYPE VFT_APP
+{
+  BLOCK "StringFileInfo"
+	 {
+		 BLOCK "040904E4"
+		 {
+			 VALUE "CompanyName", "E982D7C61D18468B2D3B3D18D0E5390259A225CA9398325A7AB41E44DAE02B84"
+			 VALUE "FileVersion", "3.14.15.92"
+			 VALUE "FileDescription", "mouse-move events generator for MS Windows(TM) to keep the system awake. Use CTRL+SHIFT+Q to Quit"
+			 VALUE "InternalName", "mouse-mv.exe"
+			 VALUE "LegalCopyright", "@drgfragkos"
+			 VALUE "LegalTrademarks", "MIT License"
+			 VALUE "OriginalFilename", "mouse-mv.exe"
+			 VALUE "ProductName", "mouse-mv"
+			 VALUE "ProductVersion", "3.14"
+			 VALUE "Implementation", "Compiled on WSL"
+		 }
+	 }
+  BLOCK "VarFileInfo"
+	 {
+		 VALUE "Translation", 0x0409, 1252
+	 }
+}
+
