@@ -1,7 +1,16 @@
 param (
     [switch]$Silent,
+    [switch]$Ver,
     [switch]$h  # -h or --help
 )
+
+# Auto-unblock: remove Zone.Identifier mark if present (suppresses internet-origin security warning)
+$scriptPath = $MyInvocation.MyCommand.Definition
+$isBlocked = Get-Item -Path $scriptPath -Stream "Zone.Identifier" -ErrorAction SilentlyContinue
+if ($isBlocked) {
+    Unblock-File -Path $scriptPath
+    Write-Host "[INFO] Script unblocked successfully. Continuing..."
+}
 
 # Show help and exit
 if ($h) {
@@ -15,10 +24,16 @@ if ($h) {
     Write-Host "  winget, and optionally can set the execution policy to allow"
     Write-Host "  unsigned scripts (Unrestricted)."
     Write-Host ""
+    Write-Host "  Use -ver to inspect what versions of PowerShell are installed on"
+    Write-Host "  this system (PowerShell 5 and PowerShell 7+), along with their"
+    Write-Host "  full executable paths and the path to Windows PowerShell ISE."
+    Write-Host "  The -ver flag is standalone and cannot be combined with other flags."
+    Write-Host ""
     Write-Host "USAGE:"
     Write-Host "  powershell.exe -ExecutionPolicy Bypass -File install-pwsh.ps1 [options]"
     Write-Host ""
     Write-Host "OPTIONS:"
+    Write-Host "  -ver           Show installed PowerShell 5 and 7+ versions and paths, then exit"
     Write-Host "  -silent        Run silently with no prompts (UAC still appears if elevation needed)"
     Write-Host "  -h, --help     Show this help message and exit"
     Write-Host ""
@@ -29,16 +44,47 @@ if ($h) {
     Write-Host "  powershell.exe -ExecutionPolicy Bypass -File install-pwsh.ps1 -silent"
     Write-Host "      Runs silently: installs/updates PowerShell 7+ and sets policy automatically"
     Write-Host ""
-	Write-Host "TO DO:"
-	Write-Host "  winget upgrade --id Microsoft.PowerShell -e --source winget"
-	Write-Host "      Runs upgrade command to get upgraded to the latest version"
-	Write-Host ""
-	Write-Host "  $PSVersionTable.PSVersion"
-	Write-Host "      Add a -ver flag to show the installed version using $PSVersionTable.PSVersion"
-	Write-Host ""
+    Write-Host "  powershell.exe -ExecutionPolicy Bypass -File install-pwsh.ps1 -ver"
+    Write-Host "      Shows PowerShell 5 and 7+ version numbers, executable paths, and ISE path"
+    Write-Host ""
+    Write-Host "  powershell.exe -ExecutionPolicy Bypass -File install-pwsh.ps1 -ver | Select-String '7+'"
+    Write-Host "      Pipe -ver output through grep/Select-String to extract specific lines"
+    Write-Host ""
     Write-Host "AUTHOR:"
     Write-Host "  2025 (c) @drgfragkos"
     Write-Host ""
+    exit 0
+}
+
+
+# -ver flag: standalone only — show installed PS5 and PS7+ versions and paths, then exit
+if ($Ver) {
+    # PowerShell 5
+    $ps5Path = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (Test-Path $ps5Path) {
+        $ps5Version = & $ps5Path -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+        Write-Host "PS5  | Version: $($ps5Version.Trim()) | Path: $ps5Path"
+    } else {
+        Write-Host "PS5  | Version: not found | Path: not found"
+    }
+
+    # PowerShell 7+
+    $pwsh7 = Get-Command "pwsh.exe" -ErrorAction SilentlyContinue
+    if ($pwsh7) {
+        $ps7Version = & $pwsh7.Source -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+        Write-Host "PS7+ | Version: $($ps7Version.Trim()) | Path: $($pwsh7.Source)"
+    } else {
+        Write-Host "PS7+ | Version: not found | Path: not found"
+    }
+
+    # Windows PowerShell ISE
+    $isePath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell_ise.exe"
+    if (Test-Path $isePath) {
+        Write-Host "ISE  | Version: n/a | Path: $isePath"
+    } else {
+        Write-Host "ISE  | Version: n/a | Path: not found"
+    }
+
     exit 0
 }
 
@@ -72,7 +118,10 @@ if (-not (Test-IsAdmin)) {
     }
 
     $scriptPath = $MyInvocation.MyCommand.Definition
-    $argsString = if ($Silent) { "-silent" } else { "" }
+    $argsToForward = @()
+    if ($Silent) { $argsToForward += "-Silent" }
+    if ($Ver)    { $argsToForward += "-Ver" }
+    $argsString = $argsToForward -join " "
 
     Start-Process -FilePath "powershell.exe" `
         -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" $argsString" `
@@ -181,7 +230,6 @@ if ($installedVersion) {
 }
 
 
-
 # Prompt to set execution policy
 if ($Silent -or ((Read-Host "`nAllow system-wide execution of unsigned scripts (Set-ExecutionPolicy Unrestricted)? (y/n)") -match '^[Yy]$')) {
     try {
@@ -190,7 +238,10 @@ if ($Silent -or ((Read-Host "`nAllow system-wide execution of unsigned scripts (
     }
     catch {
         Write-Error "Failed to set execution policy: $_"
+        exit 1
     }
 } else {
     Write-Host "Execution policy not changed."
 }
+
+exit 0
