@@ -303,6 +303,15 @@ try {
 }
 
 # -----------------------------
+# Cross-drive safety check
+# -----------------------------
+# Best practice: run the tool from a DIFFERENT drive than the one being
+# investigated, to avoid altering evidence on the target volume.
+$scriptDriveRoot  = [IO.Path]::GetPathRoot($ScriptDir).TrimEnd('\').ToUpper()
+$targetDriveRoot  = [IO.Path]::GetPathRoot($ResolvedTarget).TrimEnd('\').ToUpper()
+$isSameDrive      = ($scriptDriveRoot -eq $targetDriveRoot)
+
+# -----------------------------
 # Load criteria (if not stats-only)
 # -----------------------------
 $criteria = $null
@@ -412,6 +421,15 @@ if ($Stats) {
     $totalSize = $null
     $freeSpace = $null
     $clusterSize = $null
+    $volumeSerial = $null
+
+    # Physical disk identification
+    $diskModel     = $null
+    $diskSerial    = $null
+    $diskMediaType = $null
+    $diskBusType   = $null
+    $diskSize_GB   = $null
+    $diskPartStyle = $null
 
     try {
         $drive = Get-PSDrive | Where-Object { $_.Root -eq ($driveLetter + "\") }
@@ -425,9 +443,46 @@ if ($Stats) {
         if ($vol) {
             $fsType = $vol.FileSystem
             $clusterSize = $vol.BlockSize
+            $volumeSerial = $vol.SerialNumber
         }
     } catch {
         # Ignore drive info errors in stats mode
+    }
+
+    # Physical disk details via Storage cmdlets (Windows 10+ / Server 2012+)
+    try {
+        $partition = Get-Partition -DriveLetter ($driveLetter -replace ':','') -ErrorAction Stop
+        if ($partition) {
+            $physDisk = Get-PhysicalDisk | Where-Object { $_.DeviceId -eq $partition.DiskNumber } | Select-Object -First 1
+            if ($physDisk) {
+                $diskModel     = $physDisk.FriendlyName
+                $diskSerial    = $physDisk.SerialNumber
+                $diskMediaType = $physDisk.MediaType       # SSD, HDD, Unspecified
+                $diskBusType   = $physDisk.BusType         # SATA, NVMe, USB, etc.
+                $diskSize_GB   = [Math]::Round($physDisk.Size / 1GB, 2)
+            }
+            $diskObj = Get-Disk -Number $partition.DiskNumber -ErrorAction SilentlyContinue
+            if ($diskObj) {
+                $diskPartStyle = $diskObj.PartitionStyle   # GPT, MBR
+            }
+        }
+    } catch {
+        # Storage cmdlets may not be available on all systems
+    }
+
+    # Fallback: try WMI if Storage cmdlets didn't populate
+    if (-not $diskModel) {
+        try {
+            # Map logical drive -> partition -> physical disk via WMI
+            $logicalToPartition = Get-CimInstance -Query "ASSOCIATORS OF {Win32_LogicalDisk.DeviceID='$driveLetter'} WHERE AssocClass=Win32_LogicalDiskToPartition"
+            if ($logicalToPartition) {
+                $partToPhys = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($logicalToPartition.DeviceID)'} WHERE AssocClass=Win32_DiskDriveToDiskPartition"
+                if ($partToPhys) {
+                    if (-not $diskModel)  { $diskModel  = $partToPhys.Model }
+                    if (-not $diskSerial) { $diskSerial = $partToPhys.SerialNumber }
+                }
+            }
+        } catch { }
     }
 
     # Criteria stats (if criteria.csv exists)
@@ -467,18 +522,72 @@ if ($Stats) {
     $cpuCores    = $null
     $totalRAM_GB = $null
     $freeRAM_GB  = $null
+    $gpuName     = $null
+    $gpuRAM_GB   = $null
+    $mbManufacturer = $null
+    $mbProduct      = $null
+    $mbSerial       = $null
+    $osName         = $null
+    $osSerial       = $null
+    $osBuild        = $null
+    $computerName   = $null
+    $biosSerial     = $null
 
     # Gather system info (best-effort)
     try {
-        $cpuCores = (Get-CimInstance -ClassName Win32_ComputerSystem).NumberOfLogicalProcessors
-        $cpuObj   = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
+        $compSys = Get-CimInstance -ClassName Win32_ComputerSystem
+        if ($compSys) {
+            $cpuCores     = $compSys.NumberOfLogicalProcessors
+            $computerName = $compSys.Name
+        }
+        $cpuObj = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
         if ($cpuObj) { $cpuName = $cpuObj.Name.Trim() }
     } catch { }
+
     try {
         $os = Get-CimInstance -ClassName Win32_OperatingSystem
         if ($os) {
             $totalRAM_GB = [Math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
             $freeRAM_GB  = [Math]::Round($os.FreePhysicalMemory    / 1MB, 2)
+            $osName      = $os.Caption
+            $osSerial    = $os.SerialNumber
+            $osBuild     = $os.BuildNumber
+        }
+    } catch { }
+
+    # GPU info
+    try {
+        $gpu = Get-CimInstance -ClassName Win32_VideoController | Select-Object -First 1
+        if ($gpu) {
+            $gpuName = $gpu.Name
+            if ($gpu.AdapterRAM -and $gpu.AdapterRAM -gt 0) {
+                $gpuRAM_GB = [Math]::Round($gpu.AdapterRAM / 1GB, 2)
+            }
+        }
+    } catch { }
+
+    # Motherboard info
+    try {
+        $mb = Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -First 1
+        if ($mb) {
+            $mbManufacturer = $mb.Manufacturer
+            $mbProduct      = $mb.Product
+            $mbSerial       = $mb.SerialNumber
+        }
+    } catch { }
+
+	# BIOS serial (often used as system identifier)
+    try {
+        $bios = Get-CimInstance -ClassName Win32_BIOS | Select-Object -First 1
+        if ($bios) {
+            $rawSerial = $bios.SerialNumber
+            $biosVersion = $bios.Version
+            # Many OEMs leave placeholder strings — treat them as empty
+            $placeholders = @("System Serial Number", "To Be Filled By O.E.M.", "Default string",
+                              "Not Specified", "None", "N/A", "OEM", "O.E.M.", "123456789", "0")
+            if ($rawSerial -and ($rawSerial.Trim() -notin $placeholders)) {
+                $biosSerial = $rawSerial.Trim()
+            }
         }
     } catch { }
 
@@ -576,13 +685,41 @@ if ($Stats) {
         }
     }
 
-    Write-Host "=== STATISTICS MODE ==="
+    Write-Host "=== STATISTICS MODE ====================================================================="
     Write-Host ""
-    Write-Host "--- Target ---"
+
+    # [Enhancement #3] Best-practice advisory (always shown in stats)
+    Write-Host "+-- Advisory ---------------------------------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "|For forensic and data collection integrity, run this tool from a DIFFERENT 'Drive' than|" -ForegroundColor Yellow
+    Write-Host "|the target being investigated (e.g. run from a high-performance USB drive). This avoids|" -ForegroundColor Yellow
+    Write-Host "|any of the tool's artifacts (logs, EC folders, etc.) to be added to the evidence volume|" -ForegroundColor Yellow
+    Write-Host "|and minimises changes to the target filesystem.                                        |" -ForegroundColor Yellow
+    if ($isSameDrive) {
+        Write-Host "|                                                                                       |" -ForegroundColor Yellow
+        Write-Host "|" -ForegroundColor Yellow -NoNewline
+		Write-Host "  [WARNING]: Tool is running from the SAME Drive as the Target!                        " -ForegroundColor Red -NoNewline
+		Write-Host "|" -ForegroundColor Yellow		
+		
+        Write-Host "|" -ForegroundColor Yellow -NoNewline
+		Write-Host "  [WARNING]: Script Drive: $scriptDriveRoot  |  Target Drive: $targetDriveRoot                                     " -ForegroundColor Red -NoNewline
+		Write-Host "|" -ForegroundColor Yellow				
+		
+    } else {
+        Write-Host "|                                                                                       |" -ForegroundColor Yellow
+        Write-Host "|" -ForegroundColor Yellow -NoNewline
+		Write-Host "  [PASS]: Script Drive [$scriptDriveRoot] differs from Target Drive [$targetDriveRoot]                             " -ForegroundColor Green -NoNewline
+		Write-Host "|" -ForegroundColor Yellow
+    }
+	Write-Host "+---------------------------------------------------------------------------------------+" -ForegroundColor Yellow
+
+    Write-Host ""	
+    Write-Host "--- Target ------------------------------------------------------------------------------"
     Write-Host "Target path           : $ResolvedTarget"
     Write-Host "Drive letter          : $driveLetter"
-    if ($driveName) { Write-Host "Drive name            : $driveName" }
-    if ($fsType)     { Write-Host "Filesystem            : $fsType" }
+    if ($driveName)     { Write-Host "Drive name            : $driveName" }
+    if ($fsType)        { Write-Host "Filesystem            : $fsType" }
+    if ($volumeSerial)  { Write-Host ("Volume serial         : {0}" -f $volumeSerial) }
+    if ($diskPartStyle) { Write-Host "Partition style       : $diskPartStyle" }
     if ($totalSize -ne $null) {
         Write-Host ("Total capacity        : {0:N2} GB" -f ($totalSize / 1GB))
     }
@@ -597,8 +734,19 @@ if ($Stats) {
         Write-Host ("Cluster size          : {0} bytes" -f $clusterSize)
     }
 
+    # Physical disk identification
+    if ($diskModel -or $diskSerial -or $diskMediaType -or $diskBusType) {
+        Write-Host ""
+        Write-Host "--- Physical Disk -----------------------------------------------------------------------"
+        if ($diskModel)     { Write-Host "Disk model            : $diskModel" }
+        if ($diskSerial)    { Write-Host "Disk serial number    : $($diskSerial.Trim())" }
+        if ($diskMediaType) { Write-Host "Media type            : $diskMediaType" }
+        if ($diskBusType)   { Write-Host "Bus / interface       : $diskBusType" }
+        if ($diskSize_GB)   { Write-Host ("Disk total size       : {0:N2} GB" -f $diskSize_GB) }
+    }
+
     Write-Host ""
-    Write-Host "--- File Inventory ---"
+    Write-Host "--- File Inventory ----------------------------------------------------------------------"
     Write-Host "Total files           : $fileCount"
     Write-Host "Total folders         : $dirCount"
     Write-Host ("Total data size       : {0:N2} GB" -f ($totalBytes / 1GB))
@@ -607,14 +755,32 @@ if ($Stats) {
     Write-Host "Read-only files       : $readOnlyCount"
 
     Write-Host ""
-    Write-Host "--- System ---"
-    if ($cpuName)     { Write-Host "CPU                   : $cpuName" }
-    if ($cpuCores)    { Write-Host "Logical cores         : $cpuCores" }
-    if ($totalRAM_GB) { Write-Host ("Total RAM             : {0:N2} GB" -f $totalRAM_GB) }
-    if ($freeRAM_GB)  { Write-Host ("Free RAM              : {0:N2} GB" -f $freeRAM_GB) }
+    Write-Host "--- System ------------------------------------------------------------------------------"
+    if ($computerName) { Write-Host "Computer Name         : $computerName" }
+    if ($osName)       { Write-Host "Operating System      : $osName" }
+    if ($osBuild)      { Write-Host "OS build              : $osBuild" }
+    if ($osSerial)     { Write-Host "OS Serial / ProductID : $osSerial" }
+    
+	$biosSerialDisplay = if ($biosSerial) { $biosSerial } else { "N/A" }
+    if ($biosVersion) { $biosSerialDisplay = "{0} [{1}]" -f $biosSerialDisplay, $biosVersion.Trim() }
+    Write-Host "BIOS serial           : $biosSerialDisplay"
+	
+    Write-Host ""
+    if ($cpuName)      { Write-Host "CPU                   : $cpuName" }
+    if ($cpuCores)     { Write-Host "Logical cores         : $cpuCores" }
+    if ($totalRAM_GB)  { Write-Host ("Total RAM             : {0:N2} GB" -f $totalRAM_GB) }
+    if ($freeRAM_GB)   { Write-Host ("Free RAM              : {0:N2} GB" -f $freeRAM_GB) }
+    Write-Host ""
+    if ($gpuName)      { Write-Host "GPU                   : $gpuName" }
+    if ($gpuRAM_GB)    { Write-Host ("GPU RAM               : {0:N2} GB" -f $gpuRAM_GB) }
+    if ($mbManufacturer -or $mbProduct) {
+        $mbInfo = @($mbManufacturer, $mbProduct) | Where-Object { $_ } | ForEach-Object { $_.Trim() }
+        Write-Host "Motherboard           : $($mbInfo -join ' / ')"
+    }
+    if ($mbSerial)     { Write-Host "Motherboard serial    : $mbSerial" }
 
     Write-Host ""
-    Write-Host "--- Criteria ---"
+    Write-Host "--- Criteria ----------------------------------------------------------------------------"
     Write-Host "Criteria file         : $CriteriaPath"
     Write-Host "Criteria entries      : $criteriaCount"
     Write-Host "Distinct hash types   : $distinctHashTypesCount"
@@ -637,15 +803,17 @@ if ($Stats) {
         }
 
         Write-Host ""
-        Write-Host "--- Scan Estimate ---"
-        Write-Host ("Estimated scan time   : ~{0}  (range: {1} – {2})" -f `
+        Write-Host "--- Scan Estimate -----------------------------------------------------------------------"
+        Write-Host ("Estimated scan time   : ~{0}  (range: {1} - {2})" -f `
             (Format-Duration $estimatedSeconds), `
             (Format-Duration $lowSec), `
             (Format-Duration $highSec))
         if ($medianThroughput) {
-            Write-Host ("Measured throughput    : {0:N0} MB/s (median of 3 rounds, SHA-256)" -f ($medianThroughput / 1MB))
+            Write-Host ("Measured throughput   : {0:N0} MB/s (median of 3 rounds, SHA-256)" -f ($medianThroughput / 1MB))
         }
         Write-Host   "Estimation method     : Stratified sampling, 3 rounds, median throughput + per-file overhead"
+		Write-Host ""
+		Write-Host ":::..:::::..::..:::::..:::......:::..:::::..:::......::::......:::..:::::..::..::::..::::"
     }
 
     exit 0
@@ -654,6 +822,14 @@ if ($Stats) {
 # -----------------------------
 # SCANNING MODE
 # -----------------------------
+
+# [Enhancement #3] Warn if tool runs from the same drive as the target
+if ($isSameDrive) {
+    Write-Host ""
+    Write-Host "  ** WARNING: Tool is running from the SAME drive as the target ($targetDriveRoot). **" -ForegroundColor Red
+    Write-Host "  ** For forensic integrity, run from a different drive (e.g. USB). **" -ForegroundColor Red
+    Write-Host ""
+}
 
 # [FIX #7] Confirm destructive actions with the user before proceeding
 if ($Action) {
@@ -1034,6 +1210,12 @@ $treeHtml
 # [FIX #9] Scan summary (written to stderr via Write-Host so stdout stays CSV-clean)
 # -----------------------------
 $elapsed = $scanStopwatch.Elapsed
+
+# [Enhancement #1] Legend reminder before summary
+Write-Host ""
+Write-Host "--- Legend ------------------------------------------------------------------------------"
+Write-Host "  [+] Criteria Matched    [i] ReadOnly/Hidden/System    [!] Locked/In-Use/Unmodifiable    [x] Not Accessible"
+
 Write-Host ""
 Write-Host "=== SCAN COMPLETE ==="
 Write-Host ("Files scanned         : {0}" -f $totalFiles)
@@ -1050,6 +1232,66 @@ if ($Action -eq "COLLECT" -and $collectDir) {
         Write-Host ("Evidence tree HTML    : {0}" -f $collectHtmlPath)
     }
 }
+
+# [Enhancement #5] Next steps — context-sensitive suggestions with copy-paste commands
+$scriptName = Split-Path -Leaf $MyInvocation.MyCommand.Path
+$quotedTarget = '"{0}"' -f $ResolvedTarget
+
+Write-Host ""
+Write-Host "--- What's Next -------------------------------------------------------------------------"
+
+if (-not $Action) {
+    # User ran a scan-only (no action). Suggest the three action modes.
+    Write-Host "  You ran a scan-only pass. To act on matched files, copy & paste one of these:"
+    Write-Host ""
+    Write-Host "  Collect evidence (move matched files to an evidence folder + HTML report):" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget -Action COLLECT"
+    Write-Host ""
+    Write-Host "  Rename matched files (flag with prefix, leave in place):" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget -Action RENAME"
+    Write-Host ""
+    Write-Host "  Delete matched files permanently:" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget -Action DELETE"
+    Write-Host ""
+    Write-Host "  Preview any action without executing (WhatIf):" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget -Action COLLECT -WhatIf"
+
+} elseif ($Action -eq "COLLECT") {
+    # After COLLECT, suggest reviewing evidence and re-scanning
+    Write-Host "  Evidence has been collected. Suggested next steps:"
+    Write-Host ""
+    Write-Host "  Re-scan the target to verify no matches remain:" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget"
+    Write-Host ""
+    Write-Host "  View the evidence tree report:" -ForegroundColor Cyan
+    if ($collectHtmlPath) {
+        Write-Host "    Start-Process `"$collectHtmlPath`""
+    }
+    Write-Host ""
+    Write-Host "  Run statistics to profile the target:" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget -Stats"
+
+} elseif ($Action -eq "RENAME") {
+    # After RENAME, suggest re-scan or collect
+    Write-Host "  Matched files have been renamed. Suggested next steps:"
+    Write-Host ""
+    Write-Host "  Re-scan to verify (renamed files won't match again):" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget"
+    Write-Host ""
+    Write-Host "  Or collect the renamed evidence files into an EC folder:" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget -Action COLLECT"
+
+} elseif ($Action -eq "DELETE") {
+    # After DELETE, suggest re-scan to confirm
+    Write-Host "  Matched files have been deleted. Suggested next steps:"
+    Write-Host ""
+    Write-Host "  Re-scan the target to confirm all matches were removed:" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget"
+    Write-Host ""
+    Write-Host "  Run statistics to profile the target post-cleanup:" -ForegroundColor Cyan
+    Write-Host "    .\$scriptName -Target $quotedTarget -Stats"
+}
+
 Write-Host ""
 
 # [FIX #13] Distinct exit codes: 0 = no matches, 2 = matches found
