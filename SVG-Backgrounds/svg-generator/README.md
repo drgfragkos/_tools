@@ -11,7 +11,9 @@ This project is a simple command-line tool that generates SVG files with a custo
 
 ## Installation
 
-To install the required dependencies, run:
+No third-party dependencies are required — the tool uses only the Python
+standard library (Python 3.8+). The requirements.txt file is kept for
+documentation purposes:
 
 ```
 pip install -r requirements.txt
@@ -22,13 +24,13 @@ pip install -r requirements.txt
 To generate an SVG file with specified RGB values, use the following command:
 
 ```
-python src/main.py -R <red_value> -G <green_value> -B <blue_value>
+python main.py -R <red_value> -G <green_value> -B <blue_value>
 ```
 
 For example:
 
 ```
-python src/main.py -R 255 -G 0 -B 0
+python main.py -R 255 -G 0 -B 0
 ```
 
 This command generates an SVG file with a red background.
@@ -36,13 +38,23 @@ This command generates an SVG file with a red background.
 To use a color preset, use the -c flag:
 
 ```
-python src/main.py -c <preset_name>
+python main.py -c <preset_name>
 ```
+
+
+To choose the output filename, use the -o flag (default: output.svg):
+
+```
+python main.py -c PastelTeal -o teal.svg
+```
+
+RGB values must be integers between 0 and 255, and all three of -R, -G, -B
+must be provided together. The -c and -R/-G/-B options cannot be combined.
 
 To list all available color presets, use the -l flag:
 
 ```
-python src/main.py -l
+python main.py -l
 ```
 
 ## Color Presets
